@@ -79,6 +79,7 @@ import app.podara.data.AppDatabase
 import app.podara.data.model.Podcast
 import app.podara.data.model.PodcastEpisode
 import app.podara.player.FullPlayer
+import app.podara.player.EpisodeProgressStore
 import app.podara.player.MediaPlayerState
 import app.podara.player.MiniPlayer
 import app.podara.player.QueueDrawer
@@ -395,6 +396,14 @@ fun WindowScope.App(
         DownloadManager(database, downloadsDir, downloadSpeedLimitKbps)
     }
     val playerState = remember { MediaPlayerState() }
+    val progressStore = remember { EpisodeProgressStore(database) }
+
+    // Track listening progress for every episode the user plays, and load what was
+    // stored by previous sessions so lists show the right state from the first frame.
+    LaunchedEffect(progressStore) {
+        progressStore.attach(playerState)
+        progressStore.load()
+    }
 
     // Restore saved queue and playback state on startup
     LaunchedEffect(Unit) {
@@ -427,7 +436,10 @@ fun WindowScope.App(
     }
     val fetchPodcastClient = remember { FetchPodcastClient() }
     DisposableEffect(Unit) {
-        onDispose { playerState.release() }
+        onDispose {
+            playerState.release()
+            progressStore.release()
+        }
     }
     val scope = rememberCoroutineScope()
 
@@ -727,6 +739,7 @@ fun WindowScope.App(
                             subscriptionManager = subscriptionManager,
                             fetchPodcastClient = fetchPodcastClient,
                             playerState = playerState,
+                            progressStore = progressStore,
                             downloadManager = downloadManager,
                             downloadingEpisodes = downloadingEpisodes,
                             downloadProgress = downloadProgress,
@@ -755,6 +768,7 @@ fun WindowScope.App(
                             subscriptionManager = subscriptionManager,
                             scope = scope,
                             playerState = playerState,
+                            progressStore = progressStore,
                             favoriteVersion = favoritesVersion,
                             onFavoriteChanged = { favoritesVersion++ },
                             onPodcastClick = { podcast -> selectedPodcast = podcast },
@@ -881,6 +895,7 @@ fun WindowScope.App(
         QueueDrawer(
             state = playerState,
             database = database,
+            progressStore = progressStore,
             favoriteVersion = favoritesVersion,
             onFavoriteChanged = { favoritesVersion++ },
             onDismiss = { showQueueFromMini = false }
@@ -1019,6 +1034,7 @@ private fun HomeScreen(
     subscriptionManager: SubscriptionManager,
     scope: kotlinx.coroutines.CoroutineScope,
     playerState: MediaPlayerState,
+    progressStore: EpisodeProgressStore,
     favoriteVersion: Int = 0,
     onFavoriteChanged: () -> Unit = {},
     onPodcastClick: (Podcast) -> Unit,
@@ -1137,14 +1153,17 @@ private fun HomeScreen(
         }
     }
 
-    val visibleEpisodes = remember(recentEpisodes, searchQuery, unplayedOnly) {
-        recentEpisodes.filter { episode ->
+    // Episodes the user already played or queued leave this feed: from now on they belong
+    // to the play queue instead of occupying "latest updates".
+    val queueEpisodeIds = playerState.queue.mapNotNull { it.episodeId }.toSet()
+    val hiddenCount = recentEpisodes.count { progressStore.isHiddenFromLatest(it.id, it.id in queueEpisodeIds) }
+    val visibleEpisodes = recentEpisodes.filter { episode ->
+        !progressStore.isHiddenFromLatest(episode.id, episode.id in queueEpisodeIds) &&
             (!unplayedOnly || episode.isNew) && (
                 searchQuery.isBlank() ||
                     episode.title.contains(searchQuery, ignoreCase = true) ||
                     episode.podcastTitle.contains(searchQuery, ignoreCase = true)
                 )
-        }
     }
 
     Column(
@@ -1540,15 +1559,24 @@ private fun HomeScreen(
         if (visibleEpisodes.isEmpty()) {
             Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val caughtUp = searchQuery.isBlank() && recentEpisodes.isNotEmpty() && hiddenCount > 0
                     Text(
-                        text = if (searchQuery.isNotBlank()) Strings["home_search_empty"] else Strings["home_no_episodes"],
+                        text = when {
+                            searchQuery.isNotBlank() -> Strings["home_search_empty"]
+                            caughtUp -> Strings["home_caught_up"]
+                            else -> Strings["home_no_episodes"]
+                        },
                         color = colors.textPrimary,
                         fontSize = DesignTokens.EmptyState.TitleSize,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.height(DesignTokens.Spacing.xs))
                     Text(
-                        text = if (searchQuery.isNotBlank()) Strings["home_search_empty_hint"] else Strings["home_no_episodes_hint"],
+                        text = when {
+                            searchQuery.isNotBlank() -> Strings["home_search_empty_hint"]
+                            caughtUp -> Strings["home_caught_up_hint"]
+                            else -> Strings["home_no_episodes_hint"]
+                        },
                         color = colors.textSecondary,
                         fontSize = DesignTokens.EmptyState.SubtitleSize
                     )
@@ -1579,6 +1607,7 @@ private fun HomeScreen(
                         podcast = podcast,
                         isPlaying = playerState.currentEpisodeId == episode.id ||
                             playerState.currentUrl == episode.audioUrl,
+                        progress = progressStore.get(episode.id),
                         secondaryText = listOf(
                             episode.podcastTitle,
                             formatEpisodeMetadata(formatDate(episode.pubDate), episode.duration)
@@ -1606,6 +1635,8 @@ private fun HomeScreen(
                                     durationMs = episode.duration * 1000L,
                                     episodeId = episode.id
                                 )
+                                // Leaves the feed right away — it now lives in the play queue.
+                                progressStore.markStarted(episode.id)
                                 database.episodes.insert(episode)
                                 database.history.insert(episode.origin, episode.id)
                                 subscriptionManager.markEpisodePlayed(episode.origin, episode.id)
@@ -1842,6 +1873,7 @@ private fun PodcastDetailScreen(
     subscriptionManager: SubscriptionManager,
     fetchPodcastClient: FetchPodcastClient,
     playerState: MediaPlayerState,
+    progressStore: EpisodeProgressStore,
     downloadManager: DownloadManager,
     downloadingEpisodes: Set<String>,
     downloadProgress: Map<String, Pair<Long, Long>>,
@@ -2198,6 +2230,7 @@ private fun PodcastDetailScreen(
                             episode = episode,
                             podcast = podcast,
                             isPlaying = playerState.currentEpisodeId == episode.id || playerState.currentUrl == episode.audioUrl,
+                            progress = progressStore.get(episode.id),
                             secondaryText = formatEpisodeMetadata(formatDate(episode.pubDate), episode.duration),
                             tertiaryText = stripHtml(episode.description),
                             secondaryTextRole = EpisodeListItemSecondaryTextRole.Metadata,
@@ -2223,6 +2256,7 @@ private fun PodcastDetailScreen(
                                         durationMs = epWithUrl.duration * 1000L,
                                         episodeId = epWithUrl.id
                                     )
+                                    progressStore.markStarted(epWithUrl.id)
                                     database.episodes.insert(epWithUrl)
                                     database.history.insert(epWithUrl.origin, epWithUrl.id)
                                     subscriptionManager.markEpisodePlayed(epWithUrl.origin, epWithUrl.id)

@@ -226,6 +226,14 @@ object Strings {
         "home_filter_unread" to "Unplayed",
         "home_no_episodes" to "No episodes yet",
         "home_no_episodes_hint" to "Refresh to pull the latest episodes from your channels",
+        "home_caught_up" to "Everything new is already in your queue",
+        "home_caught_up_hint" to "Played and queued episodes move to the play queue",
+        // ── Listening progress ──
+        "episode_state_finished" to "Finished",
+        "episode_state_playing" to "Playing %1\$d%%",
+        "episode_state_playing_plain" to "Playing",
+        "episode_state_listened" to "Listened %1\$d%%",
+        "episode_state_listened_plain" to "Listened",
         "settings_subscriptions" to "Subscriptions",
         "settings_auto_refresh" to "Refresh on open",
         "settings_auto_refresh_desc" to "Update your channels in the background when Latest Updates opens (at most every 10 minutes)"
@@ -449,6 +457,14 @@ object Strings {
         "home_filter_unread" to "只看未播放",
         "home_no_episodes" to "还没有节目",
         "home_no_episodes_hint" to "点刷新从订阅频道获取最新节目",
+        "home_caught_up" to "新节目都已进入播放列表",
+        "home_caught_up_hint" to "播放或加入队列的节目会移到播放列表中",
+        // ── 收听进度 ──
+        "episode_state_finished" to "已听完",
+        "episode_state_playing" to "在听 %1\$d%%",
+        "episode_state_playing_plain" to "在听",
+        "episode_state_listened" to "已听 %1\$d%%",
+        "episode_state_listened_plain" to "听过",
         "settings_subscriptions" to "订阅",
         "settings_auto_refresh" to "进入时自动刷新",
         "settings_auto_refresh_desc" to "打开「最新更新」时后台更新订阅频道（最快 10 分钟一次）"

@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
+import app.podara.component.EpisodeProgressBar
+import app.podara.component.EpisodeStatusTag
 import app.podara.component.FavoriteEpisodeButton
 import app.podara.component.PodaraDropdownMenu
 import app.podara.component.PodaraDropdownMenuItem
@@ -61,6 +63,7 @@ import app.podara.component.PodaraDialogTitle
 import app.podara.component.ToolbarPillButton
 import app.podara.data.AppDatabase
 import app.podara.data.model.PodcastEpisode
+import app.podara.player.EpisodeProgress
 import app.podara.theme.DesignTokens
 import app.podara.theme.PodiumBackground
 import app.podara.theme.PodaraTheme
@@ -1026,6 +1029,7 @@ fun QueueDrawer(
     state: MediaPlayerState,
     onDismiss: () -> Unit,
     database: AppDatabase? = null,
+    progressStore: EpisodeProgressStore? = null,
     favoriteVersion: Int = 0,
     onFavoriteChanged: () -> Unit = {},
     onDownload: ((QueueItem) -> Unit)? = null,
@@ -1201,6 +1205,7 @@ fun QueueDrawer(
                             QueueEpisodeCard(
                                 item = item,
                                 isPlaying = isActive,
+                                progress = progressStore?.get(item.episodeId),
                                 isSelectionMode = isSelectionMode,
                                 isSelected = index in selectedIndices,
                                 onPlay = {
@@ -1400,6 +1405,7 @@ private fun QueueEpisodeCard(
     onPlay: () -> Unit,
     onSelectionToggle: () -> Unit,
     onRemove: () -> Unit,
+    progress: EpisodeProgress? = null,
     modifier: Modifier = Modifier,
     trailingActions: @Composable RowScope.() -> Unit
 ) {
@@ -1432,10 +1438,10 @@ private fun QueueEpisodeCard(
         label = "queueCardBorder"
     )
 
+    Box(modifier = modifier.fillMaxWidth().height(DesignTokens.QueuePanel.CardHeight)) {
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(DesignTokens.QueuePanel.CardHeight)
+        modifier = Modifier
+            .fillMaxSize()
             .then(
                 if (isPlaying) {
                     Modifier.drawBehind {
@@ -1564,17 +1570,28 @@ private fun QueueEpisodeCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            if (!item.subtitle.isNullOrBlank()) {
+            if (!item.subtitle.isNullOrBlank() || progress?.isStarted == true) {
                 Spacer(modifier = Modifier.height(queuePanel.SubtitleMarginTop))
-                Text(
-                    text = item.subtitle,
-                    color = favoriteList.PodcastNameColor,
-                    fontSize = queuePanel.SubtitleSize,
-                    lineHeight = queuePanel.SubtitleLineHeight,
-                    fontWeight = favoriteList.PodcastNameWeight,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (progress != null && progress.isStarted) {
+                        EpisodeStatusTag(progress = progress, isPlaying = isPlaying)
+                        if (!item.subtitle.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+                    }
+                    if (!item.subtitle.isNullOrBlank()) {
+                        Text(
+                            text = item.subtitle,
+                            color = favoriteList.PodcastNameColor,
+                            fontSize = queuePanel.SubtitleSize,
+                            lineHeight = queuePanel.SubtitleLineHeight,
+                            fontWeight = favoriteList.PodcastNameWeight,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                }
             }
         }
 
@@ -1583,6 +1600,20 @@ private fun QueueEpisodeCard(
             Row(
                 horizontalArrangement = Arrangement.spacedBy(favoriteList.ActionsGap),
                 content = trailingActions
+            )
+        }
+    }
+
+        if (progress != null && progress.isStarted && !progress.isFinished) {
+            EpisodeProgressBar(
+                fraction = progress.fraction,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(
+                        start = queuePanel.CardPaddingHorizontal,
+                        end = queuePanel.CardPaddingHorizontal,
+                        bottom = DesignTokens.FavoriteEpisodeList.ProgressBarBottomInset
+                    )
             )
         }
     }

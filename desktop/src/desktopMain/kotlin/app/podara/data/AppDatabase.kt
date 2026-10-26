@@ -100,9 +100,22 @@ class AppDatabase private constructor(private val connection: Connection) {
                     episodeId TEXT NOT NULL PRIMARY KEY,
                     state INTEGER NOT NULL DEFAULT 0,
                     played INTEGER NOT NULL DEFAULT 0,
-                    lastUpdate INTEGER NOT NULL DEFAULT 0
+                    lastUpdate INTEGER NOT NULL DEFAULT 0,
+                    positionMs INTEGER NOT NULL DEFAULT 0,
+                    durationMs INTEGER NOT NULL DEFAULT 0,
+                    finished INTEGER NOT NULL DEFAULT 0
                 )
             """)
+            // ── podcastEpisodePlayState: per-episode listening progress for existing DBs ──
+            try {
+                stmt.executeUpdate("ALTER TABLE podcastEpisodePlayState ADD COLUMN positionMs INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) { /* column already exists — ignore */ }
+            try {
+                stmt.executeUpdate("ALTER TABLE podcastEpisodePlayState ADD COLUMN durationMs INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) { /* column already exists — ignore */ }
+            try {
+                stmt.executeUpdate("ALTER TABLE podcastEpisodePlayState ADD COLUMN finished INTEGER NOT NULL DEFAULT 0")
+            } catch (_: Exception) { /* column already exists — ignore */ }
             stmt.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS podcastHistory (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -477,7 +490,66 @@ class PlayStateDao(private val conn: Connection) {
             setInt(1, if (played) 1 else 0); setString(2, episodeId); executeUpdate()
         }
     }
+
+    /**
+     * Persists the listening position of a single episode.
+     * A row is created on demand so progress can be stored for episodes the
+     * subscription refresh never initialised (restored queues, imported data).
+     */
+    suspend fun saveProgress(
+        episodeId: String,
+        positionMs: Long,
+        durationMs: Long,
+        finished: Boolean
+    ) = withContext(DatabaseDispatcher) {
+        conn.prepareStatement(
+            """
+            INSERT INTO podcastEpisodePlayState (episodeId, state, played, lastUpdate, positionMs, durationMs, finished)
+            VALUES (?, 0, ?, ?, ?, ?, ?)
+            ON CONFLICT(episodeId) DO UPDATE SET
+                positionMs = excluded.positionMs,
+                durationMs = excluded.durationMs,
+                finished = MAX(podcastEpisodePlayState.finished, excluded.finished),
+                played = MAX(podcastEpisodePlayState.played, excluded.played),
+                lastUpdate = excluded.lastUpdate
+            """.trimIndent()
+        ).useResource {
+            setString(1, episodeId)
+            setInt(2, if (finished) 1 else 0)
+            setLong(3, System.currentTimeMillis())
+            setLong(4, positionMs)
+            setLong(5, durationMs)
+            setInt(6, if (finished) 1 else 0)
+            executeUpdate()
+        }
+    }
+
+    /** Every stored listening position, keyed by episode id. */
+    suspend fun getAllProgress(): Map<String, StoredEpisodeProgress> = withContext(DatabaseDispatcher) {
+        val map = mutableMapOf<String, StoredEpisodeProgress>()
+        conn.createStatement().use { statement ->
+            statement.executeQuery(
+                "SELECT episodeId, positionMs, durationMs, finished FROM podcastEpisodePlayState"
+            ).use { rs ->
+                while (rs.next()) {
+                    map[rs.getString("episodeId")] = StoredEpisodeProgress(
+                        positionMs = rs.getLong("positionMs"),
+                        durationMs = rs.getLong("durationMs"),
+                        finished = rs.getInt("finished") == 1
+                    )
+                }
+            }
+        }
+        map
+    }
 }
+
+/** Raw listening position of one episode as stored in the database. */
+data class StoredEpisodeProgress(
+    val positionMs: Long,
+    val durationMs: Long,
+    val finished: Boolean
+)
 
 class HistoryDao(private val conn: Connection) {
     suspend fun getAllSync(): List<PodcastHistory> = withContext(DatabaseDispatcher) {

@@ -15,6 +15,9 @@ import java.util.concurrent.TimeUnit
 
 private const val TAG = "MediaPlayerState"
 
+/** Minimum gap between listening-progress reports while playing. */
+private const val PROGRESS_EMIT_INTERVAL_MS = 1_000L
+
 data class QueueItem(
     val url: String,
     val title: String,
@@ -61,6 +64,14 @@ class MediaPlayerState(
     var currentEpisodeId by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * Invoked roughly once a second with the position of the episode that is playing,
+     * and immediately when playback stops or switches to another episode.
+     * Used to persist per-episode listening progress.
+     */
+    var onProgressUpdate: ((episodeId: String, positionMs: Long, durationMs: Long) -> Unit)? = null
+    private var lastProgressEmitMs = 0L
+
     var sleepTimerTrigger by mutableStateOf<Long?>(null)
         private set
     var sleepTimerMinutes by mutableStateOf<Int?>(null)
@@ -89,6 +100,7 @@ class MediaPlayerState(
         player.onPositionChanged = { pos, dur ->
             currentPosition = pos
             duration = dur
+            emitProgress(pos, dur)
         }
         player.onError = { msg ->
             Logger.e(TAG, "Playback error: $msg")
@@ -99,6 +111,8 @@ class MediaPlayerState(
 
     fun play(url: String, title: String? = null, subtitle: String? = null, artworkUrl: String? = null, podcastArtworkUrl: String? = null, durationMs: Long = 0L, episodeId: String? = null) {
         Logger.i(TAG, "play() title=$title, url=$url, durationMs=$durationMs")
+        // Persist where we stopped in the previous episode before switching away.
+        flushProgress()
         currentUrl = url
         currentTitle = title
         currentSubtitle = subtitle
@@ -148,6 +162,7 @@ class MediaPlayerState(
         targetHistoryId: Int? = null
     ) {
         Logger.i(TAG, "playWithContext() targetUrl=$targetUrl, contextSize=${context.size}")
+        flushProgress()
         currentUrl = targetUrl
         currentTitle = title
         currentSubtitle = subtitle
@@ -182,6 +197,7 @@ class MediaPlayerState(
         queueIndex = index
         val item = queue[index]
         Logger.i(TAG, "playFromQueue: index=$index, title=${item.title}")
+        flushProgress()
         currentUrl = item.url
         currentTitle = item.title
         currentSubtitle = item.subtitle
@@ -304,6 +320,7 @@ class MediaPlayerState(
         Logger.d(TAG, "pause()")
         isUserPaused = true
         player.pause()
+        flushProgress()
     }
 
     fun resume() {
@@ -319,6 +336,7 @@ class MediaPlayerState(
 
     fun stop() {
         Logger.d(TAG, "stop()")
+        flushProgress()
         player.stop()
         currentUrl = null
         currentTitle = null
@@ -396,6 +414,26 @@ class MediaPlayerState(
         return if (duration > 0) {
             currentPosition.toFloat() / duration
         } else 0f
+    }
+
+    // ── Listening progress reporting ──
+
+    /** Throttled position report, called from the player's position callback. */
+    private fun emitProgress(positionMs: Long, durationMs: Long) {
+        val episodeId = currentEpisodeId ?: return
+        if (durationMs <= 0L) return
+        val now = System.currentTimeMillis()
+        if (now - lastProgressEmitMs < PROGRESS_EMIT_INTERVAL_MS) return
+        lastProgressEmitMs = now
+        onProgressUpdate?.invoke(episodeId, positionMs, durationMs)
+    }
+
+    /** Reports the current position right away, ignoring the throttle. */
+    private fun flushProgress() {
+        val episodeId = currentEpisodeId ?: return
+        if (duration <= 0L) return
+        lastProgressEmitMs = System.currentTimeMillis()
+        onProgressUpdate?.invoke(episodeId, currentPosition, duration)
     }
 
     // ── Session persistence ──
