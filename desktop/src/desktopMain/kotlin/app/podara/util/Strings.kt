@@ -214,7 +214,21 @@ object Strings {
         "settings_close_behavior_desc" to "Choose what happens when you close the window",
         "settings_close_quit" to "Quit the app",
         "settings_close_minimize_tray" to "Minimize to tray",
-        "settings_close_ask" to "Ask me every time"
+        "settings_close_ask" to "Ask me every time",
+        // ── Latest updates (subscriptions view) ──
+        "home_latest_updates" to "Latest Updates",
+        "home_latest_updates_desc" to "New episodes from every channel you follow",
+        "home_latest_episodes" to "Latest episodes",
+        "home_refresh" to "Refresh",
+        "home_refreshing" to "Refreshing…",
+        "home_unread_summary" to "%1\$d unplayed",
+        "home_filter_all" to "All",
+        "home_filter_unread" to "Unplayed",
+        "home_no_episodes" to "No episodes yet",
+        "home_no_episodes_hint" to "Refresh to pull the latest episodes from your channels",
+        "settings_subscriptions" to "Subscriptions",
+        "settings_auto_refresh" to "Refresh on open",
+        "settings_auto_refresh_desc" to "Update your channels in the background when Latest Updates opens (at most every 10 minutes)"
     )
 
     private val zh = mapOf(
@@ -423,7 +437,21 @@ object Strings {
         "settings_close_behavior_desc" to "选择关闭窗口时的行为",
         "settings_close_quit" to "直接关闭",
         "settings_close_minimize_tray" to "最小化到托盘",
-        "settings_close_ask" to "每次询问"
+        "settings_close_ask" to "每次询问",
+        // ── 最新更新（订阅页） ──
+        "home_latest_updates" to "最新更新",
+        "home_latest_updates_desc" to "集中显示所有订阅频道的最新节目",
+        "home_latest_episodes" to "最新节目",
+        "home_refresh" to "刷新",
+        "home_refreshing" to "刷新中…",
+        "home_unread_summary" to "%1\$d 条未播放",
+        "home_filter_all" to "全部",
+        "home_filter_unread" to "只看未播放",
+        "home_no_episodes" to "还没有节目",
+        "home_no_episodes_hint" to "点刷新从订阅频道获取最新节目",
+        "settings_subscriptions" to "订阅",
+        "settings_auto_refresh" to "进入时自动刷新",
+        "settings_auto_refresh_desc" to "打开「最新更新」时后台更新订阅频道（最快 10 分钟一次）"
     )
 
     private val maps = mapOf("en" to en, "zh" to zh)
