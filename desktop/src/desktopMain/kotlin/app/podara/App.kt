@@ -80,7 +80,6 @@ import app.podara.player.FullPlayer
 import app.podara.player.MediaPlayerState
 import app.podara.player.MiniPlayer
 import app.podara.player.QueueDrawer
-import app.podara.player.QueueItem
 import app.podara.screen.DiscoverScreen
 import app.podara.screen.DownloadsScreen
 import app.podara.screen.FavoritesScreen
@@ -1676,13 +1675,6 @@ private fun PodcastDetailScreen(
     var favoriteIds by remember { mutableStateOf(setOf<String>()) }
     val scope = rememberCoroutineScope()
 
-    // Build context queue items for playWithContext
-    val episodeContextItems: List<QueueItem> = remember(episodes) {
-        episodes.map { ep ->
-            QueueItem(url = ep.audioUrl, title = ep.title, subtitle = ep.podcastTitle, artworkUrl = ep.imageUrl, podcastArtworkUrl = podcast.imageUrl, episodeId = ep.id)
-        }
-    }
-
     // ── Active download progress from DB (for robustness across page navigation) ──
     var activeTaskProgress by remember { mutableStateOf(mapOf<String, Pair<Long, Long>>()) }
     LaunchedEffect(downloadVersion) {
@@ -2023,11 +2015,10 @@ private fun PodcastDetailScreen(
                                         episode.audioUrl
                                     }
                                     val epWithUrl = episode.copy(audioUrl = url)
-                                    playerState.playWithContext(
-                                        context = episodeContextItems.map { item ->
-                                            if (item.url == epWithUrl.audioUrl) item.copy(url = url) else item
-                                        },
-                                        targetUrl = url,
+                                    // Play just this episode. The queue only grows when the user
+                                    // explicitly adds episodes — never with the whole channel.
+                                    playerState.play(
+                                        url = url,
                                         title = epWithUrl.title,
                                         subtitle = epWithUrl.podcastTitle,
                                         artworkUrl = epWithUrl.imageUrl,
