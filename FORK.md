@@ -22,7 +22,26 @@
 点节目 = `MediaPlayerState.play()`，只追加当前条目。History / Favorites / Downloads
 三处的 `playWithContext` 保持原样（那些是用户自己整理过的列表）。
 
-### 3. 媒体键（`util/WindowsMediaKeys.kt`、`player/MediaKeyController.kt`）
+### 3. 收听进度（`player/EpisodeProgress.kt`、`component/EpisodeProgressUi.kt`）
+
+原版有 `podcastEpisodePlayState` 表，但 `state/played` 从来没人写，等于没有进度。
+
+- 新增 `positionMs / durationMs / finished` 三列（`ALTER TABLE` 幂等迁移，老库直接升级）。
+- `MediaPlayerState.onProgressUpdate` 每秒上报一次位置；切集、暂停、停止时立即 flush。
+  `EpisodeProgressStore` 落库节流 5 秒/集，听完的那一刻立即写。
+- **进度 > 98% 记为听完**（`EPISODE_FINISHED_THRESHOLD`），`finished` 是粘性的：
+  重听不会把「已听完」打回未完成。
+- 展示形态：卡片底部 3dp 横向进度条 + 元信息行的状态标签
+  （`▶ 已听 45%` / `▶ 在听 8%` / `✓ 已听完`）。没选圆环是因为列表密度下
+  72dp 封面上的圆环几乎看不清。
+- 三处共用同一个 `EpisodeListItem`：最新更新、频道详情、播放队列（队列卡片单独实现，样式一致）。
+- 百分比向下取整、未听完封顶 97%，避免「98% 但没听完」的歧义。
+
+**联动**：节目一旦播放过（或有进度）或进入播放队列，就从「最新更新」聚合列表里移除
+（`EpisodeProgressStore.isHiddenFromLatest`），只在播放列表里出现；全部移除后空状态
+显示「新节目都已进入播放列表」。
+
+### 4. 媒体键（`util/WindowsMediaKeys.kt`、`player/MediaKeyController.kt`）
 
 Windows 把媒体键投递给前台窗口，Compose/AWT 不会生成 `KeyEvent`，所以必须用
 `WH_KEYBOARD_LL` 低级键盘钩子。钩子装在独立线程上并跑自己的 `GetMessage` 循环；
@@ -57,6 +76,8 @@ export JAVA_HOME=/path/to/jdk-17
 CP="desktop/build/classes/kotlin/desktop/test;$(cat desktop/build/testcp.txt)"
 java -cp "$CP" org.junit.runner.JUnitCore app.podara.desktop.UpdatePodcastTest
 ```
+
+`EpisodeProgressTest` / `EpisodeProgressUiTest` 覆盖 98% 判定、进度落库、列表与队列渲染。
 
 `MediaKeyHookTest` 需要交互式桌面会话（会真实安装键盘钩子并注入一次
 `VK_MEDIA_PLAY_PAUSE`），无桌面环境时自动跳过。

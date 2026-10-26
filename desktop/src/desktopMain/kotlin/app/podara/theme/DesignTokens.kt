@@ -465,6 +465,15 @@ object DesignTokens {
         val DurationTextWeight = FontWeight.Medium
         val DurationTextColor = Color.White
 
+        // ── Listening progress underline (bottom edge of a card) ──
+        val ProgressBarHeight = (3f * Scale).dp
+        val ProgressBarBottomInset = (7f * Scale).dp
+        val ProgressTrackColor = Color.White.copy(alpha = 0.10f)
+        val ProgressRadius = (2f * Scale).dp
+        val StatusIconSize = (12f * Scale).dp
+        val StatusTextSize = (11f * Scale).sp
+        val StatusTextGap = (4f * Scale).dp
+
         val TitleSize = EpisodeRow.TitleSize
         val TitleLineHeight = (22f * Scale).sp
         val TitleWeight = FontWeight.SemiBold

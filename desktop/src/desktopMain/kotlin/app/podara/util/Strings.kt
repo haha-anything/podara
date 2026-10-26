@@ -226,6 +226,14 @@ object Strings {
         "home_filter_unread" to "Unplayed",
         "home_no_episodes" to "No episodes yet",
         "home_no_episodes_hint" to "Refresh to pull the latest episodes from your channels",
+        "home_caught_up" to "Everything new is already in your queue",
+        "home_caught_up_hint" to "Played and queued episodes move to the play queue",
+        // ── Listening progress ──
+        "episode_state_finished" to "Finished",
+        "episode_state_playing" to "Playing %1\$d%%",
+        "episode_state_playing_plain" to "Playing",
+        "episode_state_listened" to "Listened %1\$d%%",
+        "episode_state_listened_plain" to "Listened",
         // ── Media keys ──
         "settings_playback" to "Playback control",
         "settings_media_keys" to "Media keys",
@@ -455,6 +463,14 @@ object Strings {
         "home_filter_unread" to "只看未播放",
         "home_no_episodes" to "还没有节目",
         "home_no_episodes_hint" to "点刷新从订阅频道获取最新节目",
+        "home_caught_up" to "新节目都已进入播放列表",
+        "home_caught_up_hint" to "播放或加入队列的节目会移到播放列表中",
+        // ── 收听进度 ──
+        "episode_state_finished" to "已听完",
+        "episode_state_playing" to "在听 %1\$d%%",
+        "episode_state_playing_plain" to "在听",
+        "episode_state_listened" to "已听 %1\$d%%",
+        "episode_state_listened_plain" to "听过",
         // ── 媒体键 ──
         "settings_playback" to "播放控制",
         "settings_media_keys" to "媒体键",
