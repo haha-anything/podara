@@ -82,6 +82,10 @@ fun SettingsScreen(
     var speedLimitError by remember { mutableStateOf<String?>(null) }
     // ── Close behavior dialog state ──
     var showCloseBehaviorDialog by remember { mutableStateOf(false) }
+    // ── Playback / media keys state ──
+    var mediaKeysEnabled by remember { mutableStateOf(Settings.isMediaKeysEnabled()) }
+    var volumeKeysEnabled by remember { mutableStateOf(Settings.isVolumeKeysEnabled()) }
+    var autoRefreshEnabled by remember { mutableStateOf(Settings.isAutoRefreshSubscriptionsEnabled()) }
 
     Column(
         modifier = Modifier
@@ -276,6 +280,88 @@ fun SettingsScreen(
                             text = Strings["settings_change"],
                             color = colors.accent,
                             onClick = { showCloseBehaviorDialog = true }
+                        )
+                    },
+                    colors = colors
+                )
+            }
+
+            Spacer(Modifier.height(DesignTokens.Spacing.sm))
+
+            // ── Playback control / media keys section ──
+            SettingsSection(title = Strings["settings_playback"], colors = colors) {
+                SettingsRow(
+                    icon = Icons.Default.PlayCircleOutline,
+                    title = Strings["settings_media_keys"],
+                    subtitle = Strings["settings_media_keys_desc"],
+                    action = {
+                        Switch(
+                            checked = mediaKeysEnabled,
+                            onCheckedChange = {
+                                mediaKeysEnabled = it
+                                Settings.setMediaKeysEnabled(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = colors.background,
+                                checkedTrackColor = colors.accent,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surface,
+                                uncheckedBorderColor = colors.border
+                            )
+                        )
+                    },
+                    colors = colors
+                )
+
+                Spacer(Modifier.height(DesignTokens.Spacing.xs))
+
+                SettingsRow(
+                    icon = Icons.Default.VolumeUp,
+                    title = Strings["settings_volume_keys"],
+                    subtitle = Strings["settings_volume_keys_desc"],
+                    action = {
+                        Switch(
+                            checked = volumeKeysEnabled,
+                            enabled = mediaKeysEnabled,
+                            onCheckedChange = {
+                                volumeKeysEnabled = it
+                                Settings.setVolumeKeysEnabled(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = colors.background,
+                                checkedTrackColor = colors.accent,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surface,
+                                uncheckedBorderColor = colors.border
+                            )
+                        )
+                    },
+                    colors = colors
+                )
+            }
+
+            Spacer(Modifier.height(DesignTokens.Spacing.sm))
+
+            // ── Subscription refresh section ──
+            SettingsSection(title = Strings["settings_subscriptions"], colors = colors) {
+                SettingsRow(
+                    icon = Icons.Default.Refresh,
+                    title = Strings["settings_auto_refresh"],
+                    subtitle = Strings["settings_auto_refresh_desc"],
+                    action = {
+                        Switch(
+                            checked = autoRefreshEnabled,
+                            onCheckedChange = {
+                                autoRefreshEnabled = it
+                                Settings.setAutoRefreshSubscriptionsEnabled(it)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = colors.background,
+                                checkedTrackColor = colors.accent,
+                                uncheckedThumbColor = colors.textMuted,
+                                uncheckedTrackColor = colors.surface,
+                                uncheckedBorderColor = colors.border
+                            )
                         )
                     },
                     colors = colors

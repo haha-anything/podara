@@ -73,6 +73,40 @@ object Settings {
         save()
     }
 
+    // ── Media keys ──
+
+    /** Master switch for the global media-key hook (play/pause, next, previous, stop, volume). */
+    fun isMediaKeysEnabled(): Boolean {
+        return props.getProperty("media_keys_enabled", "true").toBoolean()
+    }
+
+    fun setMediaKeysEnabled(enabled: Boolean) {
+        props.setProperty("media_keys_enabled", enabled.toString())
+        save()
+    }
+
+    /** Whether the volume keys are routed to the app instead of the system mixer. */
+    fun isVolumeKeysEnabled(): Boolean {
+        return props.getProperty("volume_keys_enabled", "true").toBoolean()
+    }
+
+    fun setVolumeKeysEnabled(enabled: Boolean) {
+        props.setProperty("volume_keys_enabled", enabled.toString())
+        save()
+    }
+
+    // ── Subscriptions view ──
+
+    /** Auto-refresh subscriptions when the aggregated "latest updates" view opens. */
+    fun isAutoRefreshSubscriptionsEnabled(): Boolean {
+        return props.getProperty("auto_refresh_subscriptions", "true").toBoolean()
+    }
+
+    fun setAutoRefreshSubscriptionsEnabled(enabled: Boolean) {
+        props.setProperty("auto_refresh_subscriptions", enabled.toString())
+        save()
+    }
+
     private fun save() {
         try {
             settingsFile.parentFile?.mkdirs()
