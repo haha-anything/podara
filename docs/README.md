@@ -21,7 +21,34 @@
 - `../scripts/export-classpath.init.gradle` —— 导出桌面模块运行时 classpath，
   供 `desktopTest`（该任务本身有缺陷）和启动器使用。
 
-## 当前阶段的唯一阻塞项
+## 启动包（`new-repo-bootstrap/`）
 
-`技术设计细化.md` 第 12 节列了 5 个待确认问题（视觉参考、中文内容源、自动更新、
-数据迁移、是否接受 Rust）。这些不拍板，M0 之后的细节无法继续收敛。
+新仓库 `dear-universe-podcast`（大宇宙播客）的开工文件，**四个文件是一套**：
+
+| 文件 | 作用 | 拷到新仓库哪里 |
+|------|------|----------------|
+| `AGENTS.md` | 给 AI 常驻读的硬规则（禁 ORM、禁 UI 库、禁抓非官方接口、DoD） | 根目录 |
+| `开发任务书.md` | 完整规格：环境、M0 命令、里程碑、IPC、UI、坑 | `docs/` |
+| `001_init.sql` | 建表脚本，已实测可执行（10 表、级联、CHECK 约束均验证过） | `src-tauri/migrations/` |
+| `README.md` | 新仓库首页 | 根目录 → 改名 `README.md` |
+
+**新开对话时的用法**：把 `AGENTS.md` + `开发任务书.md` 一起贴给 AI，
+然后说「按 M0 开始」。它不需要旧仓库的任何其他文件——
+所有决策、实测数据、踩坑结论都已经浓缩进这两份。
+
+`001_init.sql` 已验证：10 张表建表成功、`ON DELETE CASCADE` 生效
+（删 podcast 会级联清掉 episode 和 play_state）、`queue_item` 的 CHECK 约束能拦住
+空条目、裸 URL 条目可入队。
+
+## 进度与下一步
+
+原来的 5 个待确认问题（视觉参考、中文内容源、自动更新、数据迁移、是否接受 Rust）
+**2026-10-27 已全部拍板**，记录在 `技术设计细化.md` 第零章。
+
+现在可以开工了：
+
+1. 在 GitHub 建空仓库 `dear-universe-podcast`（`gh` 未登录，需手动建或先 `gh auth login`）
+2. 把 `new-repo-bootstrap/` 的四个文件按上表放进去
+3. 新开对话，把 `AGENTS.md` + `开发任务书.md` 贴给 AI，说「按 M0 开始」
+4. M0 的三项验证（音频能播 / 能打包 / 后台不断音）过了再往下
+
