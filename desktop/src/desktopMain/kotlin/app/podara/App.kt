@@ -77,6 +77,7 @@ import app.podara.data.AppDatabase
 import app.podara.data.model.Podcast
 import app.podara.data.model.PodcastEpisode
 import app.podara.player.FullPlayer
+import app.podara.player.MediaKeyController
 import app.podara.player.MediaPlayerState
 import app.podara.player.MiniPlayer
 import app.podara.player.QueueDrawer
@@ -442,6 +443,17 @@ fun WindowScope.App(
     var completedDownloads by remember { mutableStateOf(setOf<String>()) }
     var downloadJobs by remember { mutableStateOf(mapOf<String, Job>()) }
     var activeDownloadMeta by remember { mutableStateOf(mapOf<String, Pair<String, String>>()) } // episodeId -> (podcastTitle, episodeTitle)
+
+    // ── Global media keys (play/pause, next, previous, volume) ──
+    val mediaKeyController = remember { MediaKeyController(playerState) }
+    DisposableEffect(Unit) {
+        mediaKeyController.start()
+        onDispose { mediaKeyController.stop() }
+    }
+    // Re-apply the setting whenever the user leaves the settings screen.
+    LaunchedEffect(currentScreen) {
+        mediaKeyController.syncEnabled()
+    }
 
     val handleCloseRequest = {
         val action = Settings.getCloseAction()

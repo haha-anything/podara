@@ -214,7 +214,13 @@ object Strings {
         "settings_close_behavior_desc" to "Choose what happens when you close the window",
         "settings_close_quit" to "Quit the app",
         "settings_close_minimize_tray" to "Minimize to tray",
-        "settings_close_ask" to "Ask me every time"
+        "settings_close_ask" to "Ask me every time",
+        // ── Media keys ──
+        "settings_playback" to "Playback control",
+        "settings_media_keys" to "Media keys",
+        "settings_media_keys_desc" to "Let the keyboard's play/pause, next and previous keys control playback, even when Podara is in the background",
+        "settings_volume_keys" to "Volume keys control app volume",
+        "settings_volume_keys_desc" to "Volume up/down/mute adjust Podara's own volume while an episode is loaded",
     )
 
     private val zh = mapOf(
@@ -423,7 +429,13 @@ object Strings {
         "settings_close_behavior_desc" to "选择关闭窗口时的行为",
         "settings_close_quit" to "直接关闭",
         "settings_close_minimize_tray" to "最小化到托盘",
-        "settings_close_ask" to "每次询问"
+        "settings_close_ask" to "每次询问",
+        // ── 媒体键 ──
+        "settings_playback" to "播放控制",
+        "settings_media_keys" to "媒体键",
+        "settings_media_keys_desc" to "支持键盘上的播放/暂停、上一首、下一首按键，应用在后台时同样生效",
+        "settings_volume_keys" to "音量键控制应用音量",
+        "settings_volume_keys_desc" to "有节目在播放时，音量加/减/静音键调整 Podara 自身音量",
     )
 
     private val maps = mapOf("en" to en, "zh" to zh)
