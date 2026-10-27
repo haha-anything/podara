@@ -1,0 +1,30 @@
+// Export the full runtime classpath of the desktop module for the local launcher.
+//
+// Usage:
+//   ./gradlew --init-script scripts/export-classpath.init.gradle \
+//             :desktop:compileKotlinDesktop :desktop:desktopProcessResources :desktop:exportMainClasspath
+//
+// Writes desktop/build/maincp.txt (semicolon separated absolute paths).
+
+gradle.projectsEvaluated {
+    rootProject.allprojects { p ->
+        if (p.name == 'desktop') {
+            p.tasks.register('exportMainClasspath') {
+                doLast {
+                    def cfg = p.configurations.findByName('desktopRuntimeClasspath')
+                    if (cfg == null) {
+                        cfg = p.configurations.findByName('runtimeClasspath')
+                    }
+                    if (cfg == null) {
+                        throw new GradleException('runtime classpath configuration not found')
+                    }
+                    def files = cfg.files
+                    def out = new File(p.projectDir, 'build/maincp.txt')
+                    out.parentFile.mkdirs()
+                    out.text = files.collect { it.absolutePath }.join(';')
+                    println 'maincp.txt written: ' + out.absolutePath + ' (' + files.size() + ' entries)'
+                }
+            }
+        }
+    }
+}
