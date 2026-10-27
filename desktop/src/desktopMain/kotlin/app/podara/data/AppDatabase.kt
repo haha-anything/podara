@@ -342,6 +342,66 @@ class EpisodeDao(private val conn: Connection) {
         }
     }
 
+    /**
+     * Most recent episodes across a set of subscriptions, newest first.
+     * Backs the aggregated "latest updates" list on the subscriptions screen.
+     */
+    suspend fun getRecentAcrossOrigins(origins: Set<String>, limit: Int = 100): List<PodcastEpisode> =
+        withContext(DatabaseDispatcher) {
+            if (origins.isEmpty()) return@withContext emptyList()
+            val list = mutableListOf<PodcastEpisode>()
+            val placeholders = origins.joinToString(",") { "?" }
+            conn.prepareStatement(
+                "SELECT * FROM podcastEpisode WHERE origin IN ($placeholders) ORDER BY pubDate DESC LIMIT ?"
+            ).use { ps ->
+                origins.forEachIndexed { index, origin -> ps.setString(index + 1, origin) }
+                ps.setInt(origins.size + 1, limit)
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) list.add(readEpisode(rs))
+                }
+            }
+            list
+        }
+
+    /** Newest episode timestamp per subscription — drives the channel ordering. */
+    suspend fun getLatestPubDatePerOrigin(origins: Set<String>): Map<String, Long> =
+        withContext(DatabaseDispatcher) {
+            if (origins.isEmpty()) return@withContext emptyMap()
+            val dates = mutableMapOf<String, Long>()
+            val placeholders = origins.joinToString(",") { "?" }
+            conn.prepareStatement(
+                "SELECT origin, MAX(pubDate) AS latest FROM podcastEpisode WHERE origin IN ($placeholders) GROUP BY origin"
+            ).use { ps ->
+                origins.forEachIndexed { index, origin -> ps.setString(index + 1, origin) }
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) dates[rs.getString("origin")] = rs.getLong("latest")
+                }
+            }
+            dates
+        }
+
+    /** Unread (never played, marked new) episode counts per subscription. */    suspend fun getUnreadCounts(origins: Set<String>): Map<String, Int> = withContext(DatabaseDispatcher) {
+        if (origins.isEmpty()) return@withContext emptyMap()
+        val counts = mutableMapOf<String, Int>()
+        val placeholders = origins.joinToString(",") { "?" }
+        conn.prepareStatement(
+            "SELECT origin, COUNT(*) AS unread FROM podcastEpisode WHERE new = 1 AND origin IN ($placeholders) GROUP BY origin"
+        ).use { ps ->
+            origins.forEachIndexed { index, origin -> ps.setString(index + 1, origin) }
+            ps.executeQuery().use { rs ->
+                while (rs.next()) counts[rs.getString("origin")] = rs.getInt("unread")
+            }
+        }
+        counts
+    }
+
+    suspend fun getUnreadCount(origin: String): Int = withContext(DatabaseDispatcher) {
+        conn.prepareStatement("SELECT COUNT(*) AS unread FROM podcastEpisode WHERE new = 1 AND origin = ?").use { ps ->
+            ps.setString(1, origin)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt("unread") else 0 }
+        }
+    }
+
     suspend fun insert(episode: PodcastEpisode) = withContext(DatabaseDispatcher) {
         conn.prepareStatement(
             """
@@ -380,6 +440,12 @@ class EpisodeDao(private val conn: Connection) {
     suspend fun markAsNotNew(id: String) = withContext(DatabaseDispatcher) {
         conn.prepareStatement("UPDATE podcastEpisode SET new = 0 WHERE id = ?").useResource {
             setString(1, id); executeUpdate()
+        }
+    }
+
+    suspend fun markAllAsNotNew(origin: String) = withContext(DatabaseDispatcher) {
+        conn.prepareStatement("UPDATE podcastEpisode SET new = 0 WHERE origin = ?").useResource {
+            setString(1, origin); executeUpdate()
         }
     }
 
@@ -678,6 +744,13 @@ class SubscriptionDao(private val conn: Connection) {
     suspend fun updateLastUpdate(origin: String, lastUpdate: Long) = withContext(DatabaseDispatcher) {
         conn.prepareStatement("UPDATE podcastSubscription SET lastUpdate = ? WHERE origin = ?").use { ps ->
             ps.setLong(1, lastUpdate); ps.setString(2, origin); ps.executeUpdate()
+        }
+    }
+
+    /** Keeps the cached unread counter in sync with the `podcastEpisode.new` flags. */
+    suspend fun setNewEpisodes(origin: String, count: Int) = withContext(DatabaseDispatcher) {
+        conn.prepareStatement("UPDATE podcastSubscription SET newEpisodes = ? WHERE origin = ?").use { ps ->
+            ps.setInt(1, count); ps.setString(2, origin); ps.executeUpdate()
         }
     }
 

@@ -27,6 +27,10 @@ class SubscriptionManager(
     suspend fun updatePodcast(origin: String, seedColor: Int?): UpdatePodcastResult {
         val subscription = db.subscriptions.getByOriginSync(origin) ?: return UpdatePodcastResult.NotSubscribed
 
+        // The very first successful fetch establishes the baseline: everything in the
+        // feed is old news, so nothing gets flagged as unread.
+        val isBaselineFetch = subscription.lastUpdate == 0L
+
         val response = fetchPodcastClient.fetch(origin, subscription.cacheLastModified, subscription.cacheETag, subscription.cacheContentLength)
         return when (response) {
             is FetchPodcastClientResult.Unchanged -> UpdatePodcastResult.Unchanged(response.reason)
@@ -43,6 +47,13 @@ class SubscriptionManager(
                     episodes.forEach { this.episodes.insert(it) }
                     addedEpisodes.forEach { playStates.initState(it.id) }
 
+                    if (!isBaselineFetch) {
+                        // New since the last refresh -> unread, drives the dot indicator.
+                        addedEpisodes.forEach { this.episodes.markAsNew(it.id) }
+                    }
+                    val unread = this.episodes.getUnreadCount(origin)
+                    subscriptions.setNewEpisodes(origin, unread)
+
                     subscriptions.updateLastUpdate(origin, System.currentTimeMillis())
                     subscriptions.updateCache(origin, response.eTag, response.lastModified, response.contentLength)
                     addedEpisodes
@@ -52,6 +63,22 @@ class SubscriptionManager(
             }
         }
     }
+
+    /**
+     * Clears the unread flag of an episode and refreshes the subscription's cached counter.
+     * Called whenever an episode actually starts playing.
+     */
+    suspend fun markEpisodePlayed(origin: String, episodeId: String) {
+        db.episodes.markAsNotNew(episodeId)
+        db.subscriptions.setNewEpisodes(origin, db.episodes.getUnreadCount(origin))
+    }
+
+    /** Marks every episode of a subscription as read (used when the user opens the channel). */
+    suspend fun markAllPlayed(origin: String) {
+        db.episodes.markAllAsNotNew(origin)
+        db.subscriptions.setNewEpisodes(origin, 0)
+    }
+
 }
 
 sealed class UpdatePodcastResult {

@@ -20,6 +20,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,6 +103,8 @@ import app.podara.util.SystemTrayManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.PrintWriter
@@ -315,6 +319,8 @@ private suspend fun playAndRecordHistory(
             episodeId = episode.id
         )
         database.history.insert(episode.origin, episode.id)
+        database.episodes.markAsNotNew(episode.id)
+        database.subscriptions.setNewEpisodes(episode.origin, database.episodes.getUnreadCount(episode.origin))
         Logger.d(TAG, "History recorded for episode: ${episode.id}")
     } catch (e: Exception) {
         Logger.e(TAG, "Failed to play episode: ${episode.title}", e)
@@ -759,6 +765,9 @@ fun WindowScope.App(
                             database = database,
                             subscriptionManager = subscriptionManager,
                             scope = scope,
+                            playerState = playerState,
+                            favoriteVersion = favoritesVersion,
+                            onFavoriteChanged = { favoritesVersion++ },
                             onPodcastClick = { podcast -> selectedPodcast = podcast },
                             onAddPodcast = { showAddDialog = true },
                             onDiscover = { currentScreen = "discover" },
@@ -1008,6 +1017,11 @@ internal fun sortPodcastsByLatestEpisodeDate(
         .thenBy { it.origin }
 )
 
+private const val HOME_AGGREGATE_LIMIT = 150
+private const val HOME_AUTO_REFRESH_INTERVAL_MS = 10 * 60 * 1000L
+private const val HOME_REFRESH_CONCURRENCY = 3
+
+/** Number of unread episodes at or below which the channel dot shows a plain dot. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
@@ -1015,6 +1029,9 @@ private fun HomeScreen(
     database: AppDatabase,
     subscriptionManager: SubscriptionManager,
     scope: kotlinx.coroutines.CoroutineScope,
+    playerState: MediaPlayerState,
+    favoriteVersion: Int = 0,
+    onFavoriteChanged: () -> Unit = {},
     onPodcastClick: (Podcast) -> Unit,
     onAddPodcast: () -> Unit,
     onDiscover: () -> Unit,
@@ -1023,49 +1040,79 @@ private fun HomeScreen(
     onPodcastsChanged: (List<Podcast>) -> Unit
 ) {
     val colors = PodaraTheme.colors
+    val uiScope = rememberCoroutineScope()
     var isEditing by remember { mutableStateOf(false) }
     var selectedPodcasts by remember { mutableStateOf(setOf<String>()) }
     var showBatchUnsubscribeDialog by remember { mutableStateOf(false) }
     var showUnsubscribeDialog by remember { mutableStateOf(false) }
     var podcastToUnsubscribe by remember { mutableStateOf<Podcast?>(null) }
     var searchQuery by remember { mutableStateOf("") }
-    var subscriptionMap by remember { mutableStateOf(mapOf<String, app.podara.data.model.PodcastSubscription>()) }
-    var episodeCountMap by remember { mutableStateOf(mapOf<String, Int>()) }
+    var sortOption by remember { mutableStateOf("recent_update") }
+    var showSortMenu by remember { mutableStateOf(false) }
+    var unplayedOnly by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    var recentEpisodes by remember { mutableStateOf(emptyList<PodcastEpisode>()) }
+    var unreadCounts by remember { mutableStateOf(mapOf<String, Int>()) }
     var latestEpisodePubDateMap by remember { mutableStateOf(mapOf<String, Long>()) }
     var lastListenedMap by remember { mutableStateOf(mapOf<String, Long>()) }
-    var sortOption by remember { mutableStateOf("name_asc") }
-    var showSortMenu by remember { mutableStateOf(false) }
+    var favoriteIds by remember { mutableStateOf(setOf<String>()) }
 
-    // Load subscription data and episode counts
-    LaunchedEffect(podcasts) {
-        if (podcasts.isEmpty()) return@LaunchedEffect
-        val subs = database.subscriptions.getAllSync()
-        subscriptionMap = subs.associateBy { it.origin }
-        val counts = mutableMapOf<String, Int>()
-        val latestPubDates = mutableMapOf<String, Long>()
-        podcasts.forEach { p ->
-            val episodes = database.episodes.getAllByOrigin(p.origin)
-            counts[p.origin] = episodes.size
-            latestPubDates[p.origin] = episodes.firstOrNull()?.pubDate ?: 0L
+    val podcastByOrigin = remember(podcasts) { podcasts.associateBy { it.origin } }
+
+    suspend fun reload() {
+        val origins = podcasts.map { it.origin }.toSet()
+        if (origins.isEmpty()) {
+            recentEpisodes = emptyList()
+            unreadCounts = emptyMap()
+            latestEpisodePubDateMap = emptyMap()
+            return
         }
-        episodeCountMap = counts
-        latestEpisodePubDateMap = latestPubDates
+        recentEpisodes = database.episodes.getRecentAcrossOrigins(origins, HOME_AGGREGATE_LIMIT)
+        unreadCounts = database.episodes.getUnreadCounts(origins)
+        latestEpisodePubDateMap = database.episodes.getLatestPubDatePerOrigin(origins)
         lastListenedMap = database.history.getLatestTimestampPerOrigin()
+        favoriteIds = database.favorites.getAllEpisodeIds()
     }
 
-    val filteredPodcasts = remember(podcasts, searchQuery) {
-        if (searchQuery.isBlank()) podcasts
-        else podcasts.filter { it.title.contains(searchQuery, ignoreCase = true) || it.author.contains(searchQuery, ignoreCase = true) }
-    }
-
-    val sortedPodcasts = remember(filteredPodcasts, sortOption, latestEpisodePubDateMap, lastListenedMap) {
-        when (sortOption) {
-            "name_asc" -> filteredPodcasts.sortedBy { it.fetchTitle() }
-            "name_desc" -> filteredPodcasts.sortedByDescending { it.fetchTitle() }
-            "recent_update" -> sortPodcastsByLatestEpisodeDate(filteredPodcasts, latestEpisodePubDateMap)
-            "recent_listen" -> filteredPodcasts.sortedByDescending { lastListenedMap[it.origin] ?: 0L }
-            else -> filteredPodcasts
+    suspend fun refreshAll() {
+        if (isRefreshing) return
+        val origins = podcasts.map { it.origin }
+        if (origins.isEmpty()) return
+        isRefreshing = true
+        try {
+            kotlinx.coroutines.coroutineScope {
+                val permits = Semaphore(HOME_REFRESH_CONCURRENCY)
+                origins.forEach { origin ->
+                    launch {
+                        permits.withPermit {
+                            try {
+                                subscriptionManager.updatePodcast(origin, podcastByOrigin[origin]?.imageSeedColor)
+                            } catch (_: Exception) {
+                                // A single unreachable feed must not abort the whole refresh.
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            isRefreshing = false
+            reload()
         }
+    }
+
+    // Initial load + a throttled background refresh so "最新更新" is actually up to date.
+    LaunchedEffect(podcasts) {
+        reload()
+        if (podcasts.isEmpty()) return@LaunchedEffect
+        if (!Settings.isAutoRefreshSubscriptionsEnabled()) return@LaunchedEffect
+        val newestUpdate = database.subscriptions.getAllSync().maxOfOrNull { it.lastUpdate } ?: 0L
+        if (System.currentTimeMillis() - newestUpdate > HOME_AUTO_REFRESH_INTERVAL_MS) {
+            refreshAll()
+        }
+    }
+
+    LaunchedEffect(favoriteVersion) {
+        favoriteIds = database.favorites.getAllEpisodeIds()
     }
 
     // ── Empty state ──
@@ -1081,6 +1128,34 @@ private fun HomeScreen(
             onActionClick = onAddPodcast
         )
         return
+    }
+
+    val filteredPodcasts = remember(podcasts, searchQuery) {
+        if (searchQuery.isBlank()) podcasts
+        else podcasts.filter {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+                it.author.contains(searchQuery, ignoreCase = true) ||
+                it.fetchTitle().contains(searchQuery, ignoreCase = true)
+        }
+    }
+
+    val sortedPodcasts = remember(filteredPodcasts, sortOption, latestEpisodePubDateMap, lastListenedMap) {
+        when (sortOption) {
+            "name_asc" -> filteredPodcasts.sortedBy { it.fetchTitle() }
+            "name_desc" -> filteredPodcasts.sortedByDescending { it.fetchTitle() }
+            "recent_listen" -> filteredPodcasts.sortedByDescending { lastListenedMap[it.origin] ?: 0L }
+            else -> sortPodcastsByLatestEpisodeDate(filteredPodcasts, latestEpisodePubDateMap)
+        }
+    }
+
+    val visibleEpisodes = remember(recentEpisodes, searchQuery, unplayedOnly) {
+        recentEpisodes.filter { episode ->
+            (!unplayedOnly || episode.isNew) && (
+                searchQuery.isBlank() ||
+                    episode.title.contains(searchQuery, ignoreCase = true) ||
+                    episode.podcastTitle.contains(searchQuery, ignoreCase = true)
+                )
+        }
     }
 
     Column(
@@ -1102,76 +1177,73 @@ private fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.Top
         ) {
-                // Left: Title + Subtitle
-                Column {
-                    Text(
-                        text = Strings["home_subscriptions"],
-                        fontSize = header.TitleSize,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Serif,
-                        color = colors.textPrimary
-                    )
-                    Spacer(modifier = Modifier.height(header.Gap))
-                    Text(Strings["home_subscriptions_desc"], fontSize = header.SubtitleSize, color = colors.textMuted)
-                }
+            Column {
+                Text(
+                    text = Strings["home_latest_updates"],
+                    fontSize = header.TitleSize,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Serif,
+                    color = colors.textPrimary
+                )
+                Spacer(modifier = Modifier.height(header.Gap))
+                Text(Strings["home_latest_updates_desc"], fontSize = header.SubtitleSize, color = colors.textMuted)
+            }
 
-                // Right: Search bar
-                Surface(
-                    modifier = Modifier
-                        .width(search.Width)
-                        .height(search.Height)
-                        .border(DesignTokens.Border.Width, DesignTokens.Border.SecondaryColor, RoundedCornerShape(search.Radius)),
-                    shape = RoundedCornerShape(search.Radius),
-                    color = colors.surface
+            Surface(
+                modifier = Modifier
+                    .width(search.Width)
+                    .height(search.Height)
+                    .border(DesignTokens.Border.Width, DesignTokens.Border.SecondaryColor, RoundedCornerShape(search.Radius)),
+                shape = RoundedCornerShape(search.Radius),
+                color = colors.surface
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = search.PaddingHorizontal),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = search.PaddingHorizontal),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Search,
-                            contentDescription = null,
-                            tint = colors.accent,
-                            modifier = Modifier.size(search.IconSize)
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = colors.accent,
+                        modifier = Modifier.size(search.IconSize)
+                    )
+                    Spacer(modifier = Modifier.width(search.Gap))
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        if (searchQuery.isEmpty()) {
+                            Text(Strings["home_search_placeholder"], color = colors.textDisabled, fontSize = search.TextSize)
+                        }
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            textStyle = TextStyle(color = colors.textPrimary, fontSize = search.TextSize),
+                            cursorBrush = SolidColor(colors.accent)
                         )
-                        Spacer(modifier = Modifier.width(search.Gap))
-                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                            if (searchQuery.isEmpty()) {
-                                Text(Strings["home_search_placeholder"], color = colors.textDisabled, fontSize = search.TextSize)
-                            }
-                            androidx.compose.foundation.text.BasicTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                textStyle = TextStyle(color = colors.textPrimary, fontSize = search.TextSize),
-                                cursorBrush = SolidColor(colors.accent)
-                            )
-                        }
-                        if (searchQuery.isNotEmpty()) {
-                            Icon(
-                                Icons.Default.Clear,
-                                contentDescription = Strings["discover_search_clear"],
-                                tint = colors.textMuted,
-                                modifier = Modifier
-                                    .size(search.ClearIconSize)
-                                    .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
-                                    .clickable { searchQuery = "" }
-                            )
-                        }
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = Strings["discover_search_clear"],
+                            tint = colors.textMuted,
+                            modifier = Modifier
+                                .size(search.ClearIconSize)
+                                .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+                                .clickable { searchQuery = "" }
+                        )
                     }
                 }
             }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
         val toolbarButton = DesignTokens.ToolbarButton
         val selectionToolbar = DesignTokens.SubscriptionSelectionToolbar
-        // ── List toolbar: count + actions ──
+
+        // ── Toolbar: counts + actions ──
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(toolbarButton.PillHeight),
+            modifier = Modifier.fillMaxWidth().height(toolbarButton.PillHeight),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -1181,35 +1253,44 @@ private fun HomeScreen(
                         icon = Icons.Default.Close,
                         label = Strings["home_cancel"],
                         contentDescription = Strings["home_cancel"],
-                        onClick = {
-                            isEditing = false; selectedPodcasts = emptySet()
-                        }
+                        onClick = { isEditing = false; selectedPodcasts = emptySet() }
                     )
                     Text(
                         text = Strings.get("home_selected_count", selectedPodcasts.size),
-                        fontSize = DesignTokens.ToolbarButton.PillTextSize,
+                        fontSize = toolbarButton.PillTextSize,
                         fontWeight = FontWeight.Medium,
                         color = colors.textPrimary,
                         modifier = Modifier.align(Alignment.CenterVertically)
                     )
                 }
             } else {
-                Text(
-                    text = Strings.get("home_subscription_count", podcasts.size),
-                    color = colors.textPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = Strings.get("home_unread_summary", unreadCounts.values.sum()),
+                        color = if (unreadCounts.values.sum() > 0) colors.accent else colors.textMuted,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = Strings.get("home_subscription_count", podcasts.size),
+                        color = colors.textMuted,
+                        fontSize = 13.sp
+                    )
+                }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(toolbarButton.Gap)) {
+
+            Row(horizontalArrangement = Arrangement.spacedBy(toolbarButton.Gap), verticalAlignment = Alignment.CenterVertically) {
                 if (isEditing) {
                     ToolbarPillButton(
                         icon = Icons.Default.SelectAll,
                         label = Strings["home_select_all"],
                         contentDescription = Strings["home_select_all"],
                         onClick = {
-                            selectedPodcasts = if (selectedPodcasts.size == filteredPodcasts.size) emptySet()
-                            else filteredPodcasts.map { it.origin }.toSet()
+                            selectedPodcasts = if (selectedPodcasts.size == sortedPodcasts.size) emptySet()
+                            else sortedPodcasts.map { it.origin }.toSet()
                         }
                     )
                     ToolbarPillButton(
@@ -1226,22 +1307,26 @@ private fun HomeScreen(
                         hoverBorderColor = selectionToolbar.DeleteButtonHoverBorderColor
                     )
                 } else {
-                    val currentSortLabel = when (sortOption) {
-                        "name_asc" -> Strings["home_sort_name_asc"]
-                        "name_desc" -> Strings["home_sort_name_desc"]
-                        "recent_update" -> Strings["home_sort_recent_update"]
-                        "recent_listen" -> Strings["home_sort_recent_listen"]
-                        else -> Strings["home_sort"]
+                    if (isRefreshing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.accent
+                        )
+                        Spacer(Modifier.width(2.dp))
                     }
-
+                    ToolbarPillButton(
+                        icon = Icons.Default.Refresh,
+                        label = if (isRefreshing) Strings["home_refreshing"] else Strings["home_refresh"],
+                        contentDescription = Strings["home_refresh"],
+                        onClick = { if (!isRefreshing) uiScope.launch { refreshAll() } }
+                    )
                     ToolbarPillButton(
                         icon = Icons.Default.Add,
                         label = Strings["home_add_podcast"],
                         contentDescription = Strings["home_add_podcast"],
                         onClick = onAddPodcast
                     )
-
-                    // Manage button
                     ToolbarPillButton(
                         icon = Icons.Default.Edit,
                         label = Strings["home_manage"],
@@ -1250,7 +1335,6 @@ private fun HomeScreen(
                     )
 
                     Box {
-                        // Sort button
                         val sortInteractionSource = remember { MutableInteractionSource() }
                         val isSortHovered by sortInteractionSource.collectIsHoveredAsState()
                         val isSortPressed by sortInteractionSource.collectIsPressedAsState()
@@ -1310,7 +1394,13 @@ private fun HomeScreen(
                                     modifier = Modifier.size(toolbarButton.PillIconSize)
                                 )
                                 Text(
-                                    text = currentSortLabel,
+                                    text = when (sortOption) {
+                                        "name_asc" -> Strings["home_sort_name_asc"]
+                                        "name_desc" -> Strings["home_sort_name_desc"]
+                                        "recent_update" -> Strings["home_sort_recent_update"]
+                                        "recent_listen" -> Strings["home_sort_recent_listen"]
+                                        else -> Strings["home_sort"]
+                                    },
                                     color = sortTextColor,
                                     fontSize = toolbarButton.PillTextSize,
                                     lineHeight = toolbarButton.PillLineHeight,
@@ -1330,6 +1420,12 @@ private fun HomeScreen(
                             onDismissRequest = { showSortMenu = false },
                             items = listOf(
                                 PodaraDropdownMenuItem(
+                                    label = Strings["home_sort_recent_update"],
+                                    icon = Icons.Default.Update,
+                                    isSelected = sortOption == "recent_update",
+                                    onClick = { sortOption = "recent_update"; showSortMenu = false }
+                                ),
+                                PodaraDropdownMenuItem(
                                     label = Strings["home_sort_name_asc"],
                                     icon = Icons.Default.SortByAlpha,
                                     isSelected = sortOption == "name_asc",
@@ -1342,12 +1438,6 @@ private fun HomeScreen(
                                     onClick = { sortOption = "name_desc"; showSortMenu = false }
                                 ),
                                 PodaraDropdownMenuItem(
-                                    label = Strings["home_sort_recent_update"],
-                                    icon = Icons.Default.Update,
-                                    isSelected = sortOption == "recent_update",
-                                    onClick = { sortOption = "recent_update"; showSortMenu = false }
-                                ),
-                                PodaraDropdownMenuItem(
                                     label = Strings["home_sort_recent_listen"],
                                     icon = Icons.Default.History,
                                     isSelected = sortOption == "recent_listen",
@@ -1357,20 +1447,16 @@ private fun HomeScreen(
                         )
                     }
                 }
-            }  // closes inner Row
-        }  // closes outer Row
+            }
+        }
 
         Spacer(modifier = Modifier.height(DesignTokens.Spacing.sm))
 
-        HorizontalDivider(color = colors.divider)
-
-        Spacer(modifier = Modifier.height(DesignTokens.Spacing.sm))
-
-        // ── Subscriptions list ──
+        // ── Channels: horizontal, scrollable, dot = has unplayed episodes ──
         if (sortedPodcasts.isEmpty()) {
             val glass = DesignTokens.Glass
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxWidth().height(140.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1409,35 +1495,172 @@ private fun HomeScreen(
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(DesignTokens.FavoriteEpisodeList.CardGap),
-                contentPadding = PaddingValues(
-                    top = DesignTokens.FavoriteEpisodeList.ListPaddingTop,
-                    bottom = DesignTokens.FavoriteEpisodeList.ListPaddingBottom
-                )
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.md),
+                contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp)
             ) {
-                items(sortedPodcasts) { podcast ->
-                    val sub = subscriptionMap[podcast.origin]
-                    val newCount = sub?.newEpisodes ?: 0
-                    val epCount = episodeCountMap[podcast.origin] ?: 0
-
-                    SubscriptionCard(
+                items(sortedPodcasts, key = { it.origin }) { podcast ->
+                    ChannelChip(
                         podcast = podcast,
-                        newCount = newCount,
-                        episodeCount = epCount,
+                        unread = unreadCounts[podcast.origin] ?: 0,
                         isEditing = isEditing,
                         isSelected = podcast.origin in selectedPodcasts,
                         onToggleSelect = { checked ->
                             selectedPodcasts = if (checked) selectedPodcasts + podcast.origin
                             else selectedPodcasts - podcast.origin
                         },
-                        onClick = { if (!isEditing) onPodcastClick(podcast) },
-                        onMore = {
-                            podcastToUnsubscribe = podcast
-                            showUnsubscribeDialog = true
-                        }
+                        onClick = { if (!isEditing) onPodcastClick(podcast) }
                     )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(DesignTokens.Spacing.sm))
+
+        // ── Latest episodes: vertical aggregate across all subscriptions ──
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = Strings["home_latest_episodes"],
+                color = colors.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.sm)) {
+                Text(
+                    text = Strings.get("home_episode_count", visibleEpisodes.size),
+                    color = colors.textMuted,
+                    fontSize = 12.sp
+                )
+                FilterPill(
+                    label = if (unplayedOnly) Strings["home_filter_unplayed"] else Strings["home_filter_all"],
+                    active = unplayedOnly,
+                    onClick = { unplayedOnly = !unplayedOnly }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(DesignTokens.Spacing.sm))
+        HorizontalDivider(color = colors.divider)
+        Spacer(modifier = Modifier.height(DesignTokens.Spacing.sm))
+
+        if (visibleEpisodes.isEmpty()) {
+            Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (searchQuery.isNotBlank()) Strings["home_search_empty"] else Strings["home_no_episodes"],
+                        color = colors.textPrimary,
+                        fontSize = DesignTokens.EmptyState.TitleSize,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(DesignTokens.Spacing.xs))
+                    Text(
+                        text = if (searchQuery.isNotBlank()) Strings["home_search_empty_hint"] else Strings["home_no_episodes_hint"],
+                        color = colors.textSecondary,
+                        fontSize = DesignTokens.EmptyState.SubtitleSize
+                    )
+                    if (searchQuery.isBlank() && !isRefreshing) {
+                        Spacer(modifier = Modifier.height(DesignTokens.Spacing.md))
+                        ToolbarPillButton(
+                            icon = Icons.Default.Refresh,
+                            label = Strings["home_refresh"],
+                            contentDescription = Strings["home_refresh"],
+                            onClick = { uiScope.launch { refreshAll() } }
+                        )
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(DesignTokens.FavoriteEpisodeList.CardGap),
+                contentPadding = PaddingValues(
+                    top = DesignTokens.FavoriteEpisodeList.ListPaddingTop,
+                    bottom = DesignTokens.FavoriteEpisodeList.ListPaddingBottom
+                )
+            ) {
+                items(visibleEpisodes, key = { it.id }) { episode ->
+                    val podcast = podcastByOrigin[episode.origin]
+                    EpisodeListItem(
+                        episode = episode,
+                        podcast = podcast,
+                        isPlaying = playerState.currentEpisodeId == episode.id ||
+                            playerState.currentUrl == episode.audioUrl,
+                        secondaryText = listOf(
+                            episode.podcastTitle,
+                            formatEpisodeMetadata(formatDate(episode.pubDate), episode.duration)
+                        ).filter { it.isNotBlank() }.joinToString(" · "),
+                        tertiaryText = stripHtml(episode.description),
+                        secondaryTextRole = EpisodeListItemSecondaryTextRole.PodcastName,
+                        onPodcastClick = { p -> onPodcastClick(p) },
+                        modifier = Modifier.padding(horizontal = 2.dp),
+                        onPlay = {
+                            uiScope.launch {
+                                val downloadRecord = database.downloads.getByEpisodeId(episode.id)
+                                val url = if (downloadRecord != null && File(downloadRecord.filePath).exists()) {
+                                    downloadRecord.filePath
+                                } else {
+                                    episode.audioUrl
+                                }
+                                // Single-episode playback: the queue is only extended when the
+                                // user explicitly adds episodes, never with a whole channel.
+                                playerState.play(
+                                    url = url,
+                                    title = episode.title,
+                                    subtitle = episode.podcastTitle,
+                                    artworkUrl = episode.imageUrl,
+                                    podcastArtworkUrl = podcast?.imageUrl,
+                                    durationMs = episode.duration * 1000L,
+                                    episodeId = episode.id
+                                )
+                                database.episodes.insert(episode)
+                                database.history.insert(episode.origin, episode.id)
+                                subscriptionManager.markEpisodePlayed(episode.origin, episode.id)
+                                reload()
+                            }
+                        }
+                    ) {
+                        if (episode.isNew) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accent)
+                            )
+                        }
+
+                        FavoriteEpisodeButton(isFavorite = episode.id in favoriteIds) {
+                            uiScope.launch {
+                                database.episodes.insert(episode)
+                                val isFavorite = database.favorites.toggle(episode)
+                                favoriteIds = if (isFavorite) favoriteIds + episode.id else favoriteIds - episode.id
+                                onFavoriteChanged()
+                            }
+                        }
+
+                        AddToQueueButton {
+                            uiScope.launch {
+                                val downloadRecord = database.downloads.getByEpisodeId(episode.id)
+                                val url = if (downloadRecord != null && File(downloadRecord.filePath).exists()) {
+                                    downloadRecord.filePath
+                                } else {
+                                    episode.audioUrl
+                                }
+                                playerState.addToQueue(
+                                    url = url,
+                                    title = episode.title,
+                                    artworkUrl = episode.imageUrl,
+                                    podcastArtworkUrl = podcast?.imageUrl,
+                                    episodeId = episode.id
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1499,164 +1722,129 @@ private fun HomeScreen(
     }
 }
 
+/**
+ * One channel in the horizontal strip above the aggregated list.
+ * The dot under the cover marks a channel that has at least one unplayed episode.
+ */
 @Composable
-private fun SubscriptionCard(
+private fun ChannelChip(
     podcast: Podcast,
-    newCount: Int,
-    episodeCount: Int,
+    unread: Int,
     isEditing: Boolean,
     isSelected: Boolean,
     onToggleSelect: (Boolean) -> Unit,
-    onClick: () -> Unit,
-    onMore: () -> Unit
+    onClick: () -> Unit
 ) {
     val colors = PodaraTheme.colors
-    val card = DesignTokens.FavoriteEpisodeList
-    val row = DesignTokens.SubscriptionRow
-    val badge = DesignTokens.Badge
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val shape = RoundedCornerShape(card.CardRadius)
     val animatedBg by animateColorAsState(
-        when {
-            isSelected -> card.PlayingBackgroundColor
-            isPressed && !isEditing -> card.PressedBackgroundColor
-            isHovered && !isEditing -> card.HoverBackgroundColor
-            else -> card.BackgroundColor
-        },
-        tween(DesignTokens.Animation.HoverMs)
-    )
-    val borderColor by animateColorAsState(
-        when {
-            isSelected -> card.PlayingBorderColor
-            isHovered && !isEditing -> card.HoverBorderColor
-            else -> card.BorderColor
-        },
+        if (isHovered && !isEditing) colors.elevated else Color.Transparent,
         tween(DesignTokens.Animation.HoverMs)
     )
 
-    Row(
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .height(card.CardHeight)
-            .clip(shape)
+            .width(88.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(animatedBg)
-            .border(card.BorderWidth, borderColor, shape)
+            .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
             .clickable(interactionSource = interactionSource, indication = null) {
                 if (isEditing) onToggleSelect(!isSelected) else onClick()
             }
-            .padding(horizontal = card.CardPaddingHorizontal, vertical = card.CardPaddingVertical),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (isEditing) {
-            Checkbox(
-                checked = isSelected,
-                onCheckedChange = onToggleSelect,
-                modifier = Modifier.size(row.CheckboxSize)
-            )
-            Spacer(modifier = Modifier.width(card.CoverContentGap))
-        }
-
-        // Cover
         Box(
             modifier = Modifier
-                .size(card.CoverSize)
+                .size(72.dp)
                 .shadow(
-                    card.CoverShadowElevation,
-                    RoundedCornerShape(card.CoverRadius),
-                    ambientColor = card.CoverShadowColor,
-                    spotColor = card.CoverShadowColor
+                    DesignTokens.FavoriteEpisodeList.CoverShadowElevation,
+                    RoundedCornerShape(18.dp),
+                    ambientColor = DesignTokens.FavoriteEpisodeList.CoverShadowColor,
+                    spotColor = DesignTokens.FavoriteEpisodeList.CoverShadowColor
                 )
-                .clip(RoundedCornerShape(card.CoverRadius))
+                .clip(RoundedCornerShape(18.dp))
                 .background(colors.elevated)
-        ) {
-            AsyncImage(model = podcast.imageUrl, contentDescription = podcast.title,
-                contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        }
-
-        Spacer(modifier = Modifier.width(card.CoverContentGap))
-
-        // Info
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = podcast.fetchTitle(),
-                color = card.TitleColor,
-                fontSize = card.TitleSize,
-                lineHeight = card.TitleLineHeight,
-                fontWeight = card.TitleWeight,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(card.PodcastNameMarginTop))
-            Text(
-                text = podcast.author,
-                color = card.PodcastNameColor,
-                fontSize = card.PodcastNameSize,
-                lineHeight = card.PodcastNameLineHeight,
-                fontWeight = card.PodcastNameWeight,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (podcast.description.isNotBlank()) {
-                Spacer(modifier = Modifier.height(card.MetadataMarginTop))
-                Text(
-                    text = stripHtml(podcast.description),
-                    color = card.MetadataColor,
-                    fontSize = card.MetadataSize,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.widthIn(max = row.DescriptionMaxWidth)
+                .then(
+                    if (isSelected) Modifier.border(2.dp, colors.accent, RoundedCornerShape(18.dp))
+                    else Modifier
                 )
-            }
-        }
-
-        Spacer(modifier = Modifier.width(card.ContentActionsGap))
-
-        // Meta: episode count + New badge (horizontal row)
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(DesignTokens.Spacing.sm),
-            modifier = Modifier.padding(end = row.MetaEndPadding)
         ) {
-            if (episodeCount > 0) {
-                Text(text = Strings.get("home_episode_count", episodeCount), color = card.MetadataColor, fontSize = card.MetadataSize)
-            }
-            if (newCount > 0) {
+            AsyncImage(
+                model = podcast.imageUrl,
+                contentDescription = podcast.fetchTitle(),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (isEditing) {
                 Box(
                     modifier = Modifier
-                        .wrapContentSize()
-                        .clip(RoundedCornerShape(badge.Radius))
-                        .background(badge.AccentBackgroundColor)
-                        .padding(horizontal = badge.PaddingHorizontal, vertical = badge.PaddingVertical),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = if (newCount == 1) Strings["home_new_badge"] else Strings.get("home_new_count", newCount),
-                        color = badge.AccentTextColor, fontSize = badge.TextSize, fontWeight = FontWeight.SemiBold
-                    )
-                }
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = if (isSelected) 0.45f else 0.25f))
+                )
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = onToggleSelect,
+                    modifier = Modifier.align(Alignment.Center).size(24.dp)
+                )
             }
         }
 
-        Spacer(modifier = Modifier.width(card.ActionsGap))
-
-        // More button
-        if (!isEditing) {
-            EpisodeActionIconButton(
-                icon = Icons.Default.Delete,
-                contentDescription = Strings["unsubscribe"],
-                size = card.ActionButtonSize,
-                radius = card.ActionButtonRadius,
-                iconSize = card.ActionIconSize,
-                hoverBackgroundColor = card.ActionButtonHoverBackgroundColor,
-                defaultIconColor = card.ActionIconColor,
-                hoverIconColor = card.ActionIconHoverColor,
-                onClick = onMore
-            )
+        // Unread dot — fixed-height slot keeps every label aligned.
+        Box(modifier = Modifier.height(10.dp), contentAlignment = Alignment.Center) {
+            if (unread > 0) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(colors.accent)
+                )
+            }
         }
+
+        Text(
+            text = podcast.fetchTitle(),
+            color = if (isSelected) colors.accent else colors.textPrimary,
+            fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
+
+/** Small on/off pill used for the "only unplayed" filter. */
+@Composable
+private fun FilterPill(label: String, active: Boolean, onClick: () -> Unit) {
+    val colors = PodaraTheme.colors
+    val toolbarButton = DesignTokens.ToolbarButton
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val shape = RoundedCornerShape(toolbarButton.PillRadius)
+    Box(
+        modifier = Modifier
+            .height(26.dp)
+            .clip(shape)
+            .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .border(
+                DesignTokens.Border.Width,
+                if (active) colors.accent.copy(alpha = 0.5f) else colors.border,
+                shape
+            )
+            .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+            .clickable(interactionSource = interactionSource, indication = null) { onClick() }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (active) colors.accent else if (isHovered) colors.textPrimary else colors.textSecondary,
+            fontSize = 12.sp
+        )
+    }
+}
+
 
 @Composable
 private fun PodcastDetailScreen(
@@ -2040,6 +2228,8 @@ private fun PodcastDetailScreen(
                                     )
                                     database.episodes.insert(epWithUrl)
                                     database.history.insert(epWithUrl.origin, epWithUrl.id)
+                                    subscriptionManager.markEpisodePlayed(epWithUrl.origin, epWithUrl.id)
+                                    episodes = database.episodes.getAllByOrigin(podcast.origin)
                                 }
                             },
                         ) {

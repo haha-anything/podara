@@ -95,6 +95,18 @@ object Settings {
         save()
     }
 
+    // ── Subscriptions view ──
+
+    /** Auto-refresh subscriptions when the aggregated "latest updates" view opens. */
+    fun isAutoRefreshSubscriptionsEnabled(): Boolean {
+        return props.getProperty("auto_refresh_subscriptions", "true").toBoolean()
+    }
+
+    fun setAutoRefreshSubscriptionsEnabled(enabled: Boolean) {
+        props.setProperty("auto_refresh_subscriptions", enabled.toString())
+        save()
+    }
+
     private fun save() {
         try {
             settingsFile.parentFile?.mkdirs()
