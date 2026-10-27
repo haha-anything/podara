@@ -38,8 +38,10 @@ import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import app.podara.data.model.Podcast
 import app.podara.data.model.PodcastEpisode
+import app.podara.player.EpisodeProgress
 import app.podara.theme.DesignTokens
 import coil3.compose.AsyncImage
 import java.awt.Cursor
@@ -57,6 +59,7 @@ fun EpisodeListItem(
     secondaryText: String,
     tertiaryText: String,
     onPlay: () -> Unit,
+    progress: EpisodeProgress? = null,
     secondaryTextRole: EpisodeListItemSecondaryTextRole = EpisodeListItemSecondaryTextRole.PodcastName,
     onPodcastClick: ((Podcast) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -93,10 +96,10 @@ fun EpisodeListItem(
         Modifier
     }
 
+    Box(modifier = modifier.fillMaxWidth().height(favoriteList.CardHeight)) {
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(favoriteList.CardHeight)
+        modifier = Modifier
+            .fillMaxSize()
             .clip(shape)
             .background(itemBg)
             .border(favoriteList.BorderWidth, borderColor, shape)
@@ -171,32 +174,41 @@ fun EpisodeListItem(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(favoriteList.PodcastNameMarginTop))
-            Text(
-                text = secondaryText,
-                color = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
-                    favoriteList.PodcastNameColor
-                } else {
-                    favoriteList.MetadataColor
-                },
-                fontSize = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
-                    favoriteList.PodcastNameSize
-                } else {
-                    favoriteList.MetadataSize
-                },
-                lineHeight = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
-                    favoriteList.PodcastNameLineHeight
-                } else {
-                    favoriteList.MetadataSize
-                },
-                fontWeight = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
-                    favoriteList.PodcastNameWeight
-                } else {
-                    FontWeight.Normal
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) podcastModifier else Modifier
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (progress != null && progress.isStarted) {
+                    EpisodeStatusTag(progress = progress, isPlaying = isPlaying)
+                    Spacer(modifier = Modifier.width(favoriteList.StatusTextGap + 2.dp))
+                }
+                Text(
+                    text = secondaryText,
+                    color = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
+                        favoriteList.PodcastNameColor
+                    } else {
+                        favoriteList.MetadataColor
+                    },
+                    fontSize = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
+                        favoriteList.PodcastNameSize
+                    } else {
+                        favoriteList.MetadataSize
+                    },
+                    lineHeight = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
+                        favoriteList.PodcastNameLineHeight
+                    } else {
+                        favoriteList.MetadataSize
+                    },
+                    fontWeight = if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) {
+                        favoriteList.PodcastNameWeight
+                    } else {
+                        FontWeight.Normal
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).then(
+                        if (secondaryTextRole == EpisodeListItemSecondaryTextRole.PodcastName) podcastModifier
+                        else Modifier
+                    )
+                )
+            }
             if (tertiaryText.isNotBlank()) {
                 Spacer(modifier = Modifier.height(favoriteList.MetadataMarginTop))
                 Text(
@@ -212,6 +224,22 @@ fun EpisodeListItem(
         Spacer(modifier = Modifier.width(favoriteList.ContentActionsGap))
 
         Row(horizontalArrangement = Arrangement.spacedBy(favoriteList.ActionsGap), content = trailingActions)
+    }
+
+        // Listening progress along the bottom edge of the card.
+        val listenedFraction = progress?.fraction ?: 0f
+        if (progress != null && progress.isStarted && !progress.isFinished) {
+            EpisodeProgressBar(
+                fraction = listenedFraction,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(
+                        start = favoriteList.CardPaddingHorizontal,
+                        end = favoriteList.CardPaddingHorizontal,
+                        bottom = favoriteList.ProgressBarBottomInset
+                    )
+            )
+        }
     }
 }
 
